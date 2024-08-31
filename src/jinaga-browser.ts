@@ -19,6 +19,7 @@ import { Network, NetworkNoOp } from "./managers/NetworkManager";
 import { MemoryStore } from "./memory/memory-store";
 import { ObservableSource } from "./observable/observable";
 import { Storage } from "./storage";
+import {FetchConnection} from "./http/fetch";
 
 export type JinagaBrowserConfig = {
     httpEndpoint?: string,
@@ -63,7 +64,7 @@ function createWebClient(
         const reauthenticate = provider
             ? () => provider.reauthenticate()
             : () => Promise.resolve(false);
-        const httpConnection = new XhrConnection(config.httpEndpoint, getHeaders, reauthenticate);
+        const httpConnection = new FetchConnection(config.httpEndpoint, getHeaders, reauthenticate);
         const httpTimeoutSeconds = config.httpTimeoutSeconds || 30;
         const webClient = new WebClient(httpConnection, syncStatusNotifier, {
             timeoutSeconds: httpTimeoutSeconds
