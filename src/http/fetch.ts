@@ -48,20 +48,152 @@ export class FetchConnection implements HttpConnection {
                 headers: getFetchHeaders(headers)
             })
                 .then(response => {
-                    if (response.ok) {
-                        resolve({
-                            statusCode: response.status,
-                            statusMessage: response.statusText,
-                            responseType: response.headers.get('Content-Type') || '',
-                            response: response.body
-                        });
-                    }
+                    resolve({
+                        statusCode: response.status,
+                        statusMessage: response.statusText,
+                        responseType: response.headers.get('Content-Type') || '',
+                        response: response.body
+                    });
                 });
         });
     }
 
-    getStream(path: string, onResponse: (response: {}) => Promise<void>, onError: (err: Error) => void): () => void {
-        return function () {
+    // getStream(path: string, onResponse: (response: {}) => Promise<void>, onError: (err: Error) => void): () => void {
+    //     let closed = false;
+    //     this.getHeaders().then(headers => {
+    //         if (closed) {
+    //             return;
+    //         }
+    //
+    //         const controller = new AbortController();
+    //         const signal = controller.signal;
+    //
+    //         fetch(this.url + path, {
+    //             headers: {
+    //                 'Accept': 'application/x-jinaga-feed-stream',
+    //                 ...headers
+    //             },
+    //             signal
+    //         })
+    //             .then(response => {
+    //                 if (!response.body) {
+    //                     throw new Error('ReadableStream not supported.');
+    //                 }
+    //
+    //                 const reader = response.body.getReader();
+    //                 let receivedBytes = 0;
+    //                 const decoder = new TextDecoder();
+    //
+    //                 return reader.read().then(function processText({ done, value }) {
+    //                     if (done) {
+    //                         return;
+    //                     }
+    //
+    //                     const text = decoder.decode(value, { stream: true });
+    //                     const lastNewline = text.lastIndexOf('\n');
+    //                     if (lastNewline >= 0) {
+    //                         const jsonText = text.substring(0, lastNewline);
+    //                         receivedBytes += jsonText.length + 1;
+    //                         const lines = jsonText.split(/\r?\n/);
+    //                         for (const line of lines) {
+    //                             if (line.length > 0) {
+    //                                 try {
+    //                                     const json = JSON.parse(line);
+    //                                     onResponse(json);
+    //                                 } catch (err) {
+    //                                     onError(err as Error);
+    //                                 }
+    //                             }
+    //                         }
+    //                     }
+    //
+    //                     return reader.read().then(processText);
+    //                 });
+    //             })
+    //             .catch(err => {
+    //                 if (err.name === 'AbortError') {
+    //                     console.log('Fetch aborted');
+    //                 } else {
+    //                     onError(new Error('Network request failed.'));
+    //                 }
+    //             });
+    //
+    //         return () => {
+    //             closed = true;
+    //             controller.abort();
+    //         };
+    //     });
+    // }
+
+    getStream(path: string, onResponse: (response: any) => Promise<void>, onError: (err: Error) => void): () => void {
+        const controller = new AbortController();
+        const signal = controller.signal;
+
+
+
+        fetch(this.url + path, {
+            method: 'GET',
+            headers: {
+                'Accept': 'application/x-jinaga-feed-stream'
+            },
+            signal: signal
+        })
+            .then(response => {
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                return response;
+            })
+            .then(response => {
+                const reader = response.body?.getReader();
+                if (!reader) {
+                    throw new Error('Response body is empty.');
+                }
+                return reader;
+            })
+            .then(reader => {
+                const decoder = new TextDecoder();
+                let bytesReceived = 0;
+                let buffer = '';
+
+                return new Promise((resolve, reject) => {
+                    const processChunk = (chunk: ReadableStreamDefaultChunkType<'string'>) => {
+                        const chunkString = decoder.decode(chunk, {stream: true});
+                        buffer += chunkString;
+
+                        const lines = buffer.split('\n');
+
+                        for (let i = 0; i < lines.length; i++) {
+                            const line = lines[i].trim();
+                            if (line) {
+                                try {
+                                    const json = JSON.parse(line);
+                                    onResponse(json).catch(e => reject(e));
+                                } catch (err) {
+                                    onError(new Error(`Error parsing JSON: ${(err as any).message}`));
+                                }
+                            }
+                        }
+
+                        bytesReceived += chunkString.length;
+
+                        if (chunk.done) {
+                            resolve();
+                        }
+                    };
+
+                    reader.read().then(processChunk).catch(reject);
+                });
+            })
+            .then(() => {
+                // No-op
+            })
+            .catch(error => {
+                onError(error instanceof Error ? error : new Error(String(error)));
+            });
+        return () => {
+            closed = true;
+            controller.abort();
         };
     }
 
@@ -106,7 +238,7 @@ export class FetchConnection implements HttpConnection {
         });
     }
 
-    private httpPost(tail: string, headers: HttpHeaders, body: string | {}, timeoutSeconds: number): Promise<XHRHttpResponse> {
+    private httpPost(tail: string, headers: HttpHeaders, body: string | {}, timeoutSeconds: number): Promise<FetchHttpResponse> {
         return new Promise<FetchHttpResponse>((resolve, reject) => {
             fetch(this.url + tail, {
                 method: 'POST',
@@ -124,60 +256,12 @@ export class FetchConnection implements HttpConnection {
                     }
 
                 })
-                .catch(err => {
-                    Trace.warn('Network request failed.');
-                    resolve({
-                        statusCode: 500,
-                        statusMessage: "Network request failed",
-                        responseType: response.headers.get('Content-Type') || '',
-                        response: err.message
-                    });
-                });
-            })
-            const xhr = new XMLHttpRequest();
-            xhr.open("POST", this.url + tail, true);
-            xhr.onload = () => {
-                resolve({
-                    statusCode: xhr.status,
-                    statusMessage: xhr.statusText,
-                    responseType: xhr.responseType,
-                    response: xhr.response,
-                });
-            };
-            xhr.ontimeout = (event) => {
-                Trace.warn('Network request timed out.');
-                resolve({
-                    statusCode: 408,
-                    statusMessage: "Request Timeout",
-                    responseType: xhr.responseType,
-                    response: xhr.response
-                });
-            };
-            xhr.onerror = (event) => {
-                Trace.warn('Network request failed.');
-                resolve({
-                    statusCode: 500,
-                    statusMessage: "Network request failed",
-                    responseType: xhr.responseType,
-                    response: xhr.response
-                });
-            };
-            xhr.setRequestHeader('Accept', 'application/json');
-            setHeaders(headers, xhr);
-            xhr.timeout = timeoutSeconds * 1000;
-            if (typeof body === 'string') {
-                xhr.setRequestHeader('Content-Type', 'text/plain');
-                xhr.send(body);
-            }
-            else {
-                xhr.setRequestHeader('Content-Type', 'application/json');
-                xhr.send(JSON.stringify(body));
-            }
-        });
+        })
+
     }
 
-
 }
+
 
 
 function getFetchHeaders(headers: HttpHeaders) {
